@@ -4,3 +4,4 @@ aiohttp
 aiofiles
 python-dotenv
 motor
+psutil

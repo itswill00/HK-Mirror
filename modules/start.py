@@ -55,6 +55,7 @@ async def help_cmd(client: Client, message: Message):
         "• `/delthumb` — Delete your custom leech thumbnail\n\n"
         "**Information Commands:**\n"
         "• `/quota` — Check remaining daily quota (Default limit: `10 GB`)\n"
+        "• `/stats` — Check OS and Bot performance statistics\n"
         "• `/help` — Display this documentation"
     )
     

@@ -39,7 +39,8 @@ if __name__ == "__main__":
                 BotCommand("pd", "Mirror directly to Pixeldrain"),
                 BotCommand("setthumb", "Set custom thumbnail for leeching"),
                 BotCommand("delthumb", "Delete custom thumbnail"),
-                BotCommand("quota", "Check your remaining daily quota")
+                BotCommand("quota", "Check your remaining daily quota"),
+                BotCommand("stats", "Check OS and Bot statistics")
             ]
             await app.set_bot_commands(commands)
             logger.info("✅ Bot commands registered successfully.")

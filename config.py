@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 from typing import List
 from dotenv import load_dotenv
@@ -52,3 +53,5 @@ DOWNLOAD_DIR = "/root/simple-mirror-bot/downloads"
 THUMBNAIL_DIR = "/root/simple-mirror-bot/thumbnails"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
+
+bot_start_time = time.time()
