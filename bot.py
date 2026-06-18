@@ -256,7 +256,10 @@ async def upload_progress_callback(current: int, total: int, status_msg: Message
     if not hasattr(upload_progress_callback, "last_edit"):
         upload_progress_callback.last_edit = 0.0
     if now - upload_progress_callback.last_edit > 4.0:
-        txt = UI.build_progress_text("Uploading file", filename, current, total, start_time)
+        user_mention = ""
+        if task_id and task_id in active_tasks_meta:
+            user_mention = active_tasks_meta[task_id].get("user_mention", "")
+        txt = UI.build_progress_text("Uploading file", filename, current, total, start_time, user_mention)
         try:
             markup = get_cancel_keyboard(task_id, url) if task_id else None
             await edit_message_with_style(status_msg, txt, reply_markup=markup)
@@ -290,7 +293,8 @@ class UI:
         filename: str,
         current: int,
         total: int,
-        start_time: float
+        start_time: float,
+        user_mention: str = ""
     ) -> str:
         bar, pct = UI.progress_bar(current, total)
         now = time.time()
@@ -299,13 +303,16 @@ class UI:
         eta = (total - current) / speed if speed > 0 and total > 0 else 0.0
         eta_str = time.strftime('%H:%M:%S', time.gmtime(eta)) if eta > 0 else "00:00:00"
         
-        return (
+        txt = (
             f"**{title}...**\n\n"
             f"• **File:** `{filename}`\n"
             f"• **Progress:** `[{bar}]` **{pct:.1f}%**\n"
             f"• **Speed:** `{UI.human_size(speed)}/s` | **ETA:** `{eta_str}`\n"
             f"• **Size:** `{UI.human_size(current)}` / `{UI.human_size(total)}`"
         )
+        if user_mention:
+            txt += f"\n• **User:** {user_mention}"
+        return txt
 
 # ---------------------------------------------------------
 # 5. RETRY-ABLE NETWORK CORE (UPLOADS & DOWNLOADS)
@@ -405,8 +412,11 @@ class NetworkCore:
                     
                     now = time.time()
                     if now - last_edit > 4.0: # Prevent spam / API flood limits
+                        user_mention = ""
+                        if task_id and task_id in active_tasks_meta:
+                            user_mention = active_tasks_meta[task_id].get("user_mention", "")
                         txt = UI.build_progress_text(
-                            "Downloading file", filename, current_size, total_size, start_time
+                            "Downloading file", filename, current_size, total_size, start_time, user_mention
                         )
                         try:
                             markup = get_cancel_keyboard(task_id, url) if task_id else None
@@ -995,20 +1005,29 @@ async def run_mirror_worker(client: Client, status_msg: Message, url: str, user_
     task_id = f"{status_msg.chat.id}_{status_msg.id}"
     
     try:
+        # Resolve user mention
+        try:
+            user = await client.get_users(user_id)
+            user_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+            user_mention += f" (ID: `{user.id}`)"
+        except Exception:
+            user_mention = f"ID: `{user_id}`"
+
         # Register task
         active_tasks[task_id] = asyncio.current_task()
         active_tasks_meta[task_id] = {
             "user_id": user_id,
+            "user_mention": user_mention,
             "file_path": None,
             "status_msg": status_msg
         }
 
         # Resolve direct link dynamically
-        await edit_message_with_style(status_msg, "**Resolving link...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await edit_message_with_style(status_msg, f"**Resolving link...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         url = await resolve_direct_link(url)
 
         # Pre-check file size
-        await edit_message_with_style(status_msg, "**Checking file size...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await edit_message_with_style(status_msg, f"**Checking file size...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         filesize_pre = await get_link_size(url)
         if filesize_pre is not None:
             if filesize_pre > 10 * 1024 * 1024 * 1024:
@@ -1020,7 +1039,7 @@ async def run_mirror_worker(client: Client, status_msg: Message, url: str, user_
                     raise Exception(f"Your remaining quota ({UI.human_size(quota_left)}) is not enough for this file ({UI.human_size(filesize_pre)})!")
 
         # Step 1: Download
-        await edit_message_with_style(status_msg, "**Downloading file...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await edit_message_with_style(status_msg, f"**Downloading file...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         file_path = await network.download(url, DOWNLOAD_DIR, status_msg, user_id=user_id, task_id=task_id)
         filename = os.path.basename(file_path)
         if not file_path or not os.path.exists(file_path):
@@ -1029,12 +1048,12 @@ async def run_mirror_worker(client: Client, status_msg: Message, url: str, user_
         
         # Step 2: Upload
         if service == "gofile":
-            await edit_message_with_style(status_msg, "**Uploading to Gofile...**", reply_markup=get_cancel_keyboard(task_id, url))
+            await edit_message_with_style(status_msg, f"**Uploading to Gofile...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
             link = await network.upload_gofile(file_path, config.gofile_key, status_msg, task_id, url)
             btn_text = "Gofile"
             btn_style = "success"
         elif service == "pixeldrain":
-            await edit_message_with_style(status_msg, "**Uploading to Pixeldrain...**", reply_markup=get_cancel_keyboard(task_id, url))
+            await edit_message_with_style(status_msg, f"**Uploading to Pixeldrain...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
             link = await network.upload_pixeldrain(file_path, config.pixeldrain_key, status_msg, task_id, url)
             btn_text = "Pixeldrain"
             btn_style = "primary"
@@ -1050,7 +1069,8 @@ async def run_mirror_worker(client: Client, status_msg: Message, url: str, user_
         success_text = (
             f"**File successfully mirrored**\n\n"
             f"• **Filename:** `{filename}`\n"
-            f"• **Size:** `{UI.human_size(filesize)}`"
+            f"• **Size:** `{UI.human_size(filesize)}`\n"
+            f"• **User:** {user_mention}"
         )
         reply_markup = {
             "inline_keyboard": [
@@ -1064,14 +1084,16 @@ async def run_mirror_worker(client: Client, status_msg: Message, url: str, user_
     except asyncio.CancelledError:
         logger.info(f"Task {task_id} was cancelled by user.")
         try:
-            await edit_message_with_style(status_msg, "**Mirroring process cancelled by user.**")
+            user_mention = active_tasks_meta.get(task_id, {}).get("user_mention", f"ID: `{user_id}`")
+            await edit_message_with_style(status_msg, f"**Mirroring process cancelled by user.**\n• **User:** {user_mention}")
         except Exception:
             pass
         raise
     except Exception as e:
         logger.error(f"Error executing {service} mirror worker: {e}", exc_info=True)
         try:
-            await edit_message_with_style(status_msg, f"**An error occurred:**\n`{str(e)}`")
+            user_mention = active_tasks_meta.get(task_id, {}).get("user_mention", f"ID: `{user_id}`")
+            await edit_message_with_style(status_msg, f"**An error occurred:**\n`{str(e)}`\n• **User:** {user_mention}")
         except Exception:
             pass
     finally:
@@ -1109,7 +1131,15 @@ async def gofile_cmd(client: Client, message: Message):
         await message.reply_text("Link missing. Example: `/gf https://link.com/file.zip` or reply to a message containing a link.")
         return
         
-    status_msg = await message.reply_text("**Processing, please wait...**")
+    # Resolve user details for the initial text
+    try:
+        user = message.from_user
+        user_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+        user_mention += f" (ID: `{user.id}`)"
+    except Exception:
+        user_mention = f"ID: `{user_id}`"
+
+    status_msg = await message.reply_text(f"**Processing, please wait...**\n• **User:** {user_mention}")
     await run_mirror_worker(client, status_msg, url, user_id, "gofile")
 
 # Command: Pixeldrain Mirror
@@ -1134,7 +1164,15 @@ async def pixeldrain_cmd(client: Client, message: Message):
         await message.reply_text("Link missing. Example: `/pd https://link.com/file.zip` or reply to a message containing a link.")
         return
         
-    status_msg = await message.reply_text("**Processing, please wait...**")
+    # Resolve user details for the initial text
+    try:
+        user = message.from_user
+        user_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+        user_mention += f" (ID: `{user.id}`)"
+    except Exception:
+        user_mention = f"ID: `{user_id}`"
+
+    status_msg = await message.reply_text(f"**Processing, please wait...**\n• **User:** {user_mention}")
     await run_mirror_worker(client, status_msg, url, user_id, "pixeldrain")
 
 # Command: Mirror Choice Trigger (asks user where to mirror)
@@ -1228,15 +1266,23 @@ async def mirror_choice_callback(client: Client, callback_query: CallbackQuery):
         
     await callback_query.answer(f"Processing upload to {choice.capitalize()}...")
     
+    # Resolve user details for the initial text
+    try:
+        user = callback_query.from_user
+        user_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+        user_mention += f" (ID: `{user.id}`)"
+    except Exception:
+        user_mention = f"ID: `{clicker_user_id}`"
+
     # Edit message to start progress updates
     status_msg = await edit_styled_message(
         chat_id=callback_query.message.chat.id,
         message_id=callback_query.message.id,
-        text="**Processing, please wait...**"
+        text=f"**Processing, please wait...**\n• **User:** {user_mention}"
     )
     if not status_msg:
         status_msg = callback_query.message
-        await status_msg.edit_text("**Processing, please wait...**")
+        await status_msg.edit_text(f"**Processing, please wait...**\n• **User:** {user_mention}")
         
     asyncio.create_task(run_mirror_worker(client, status_msg, url, clicker_user_id, choice))
 
@@ -1246,7 +1292,10 @@ async def leech_upload_progress(current: int, total: int, message: Message, star
     if not hasattr(leech_upload_progress, "last_edit"):
         leech_upload_progress.last_edit = 0.0
     if now - leech_upload_progress.last_edit > 4.0:
-        txt = UI.build_progress_text("Uploading to Telegram", filename, current, total, start_time)
+        user_mention = ""
+        if task_id and task_id in active_tasks_meta:
+            user_mention = active_tasks_meta[task_id].get("user_mention", "")
+        txt = UI.build_progress_text("Uploading to Telegram", filename, current, total, start_time, user_mention)
         try:
             markup = get_cancel_keyboard(task_id, url) if task_id else None
             await edit_message_with_style(message, txt, reply_markup=markup)
@@ -1275,7 +1324,16 @@ async def leech_cmd(client: Client, message: Message):
     if not url:
         await message.reply_text("Link missing. Example: `/leech https://link.com/file.zip` or reply to a message containing a link.")
         return
-    status_msg = await message.reply_text("**Processing, please wait...**")
+
+    # Resolve user mention
+    try:
+        user = await client.get_users(user_id)
+        user_mention = f"@{user.username}" if user.username else f"[{user.first_name}](tg://user?id={user.id})"
+        user_mention += f" (ID: `{user.id}`)"
+    except Exception:
+        user_mention = f"ID: `{user_id}`"
+
+    status_msg = await message.reply_text(f"**Processing, please wait...**\n• **User:** {user_mention}")
     
     file_path = None
     task_id = f"{status_msg.chat.id}_{status_msg.id}"
@@ -1285,16 +1343,17 @@ async def leech_cmd(client: Client, message: Message):
         active_tasks[task_id] = asyncio.current_task()
         active_tasks_meta[task_id] = {
             "user_id": user_id,
+            "user_mention": user_mention,
             "file_path": None,
             "status_msg": status_msg
         }
 
         # Resolve direct link dynamically
-        await status_msg.edit_text("**Resolving link...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await status_msg.edit_text(f"**Resolving link...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         url = await resolve_direct_link(url)
 
         # Pre-check file size
-        await status_msg.edit_text("**Checking file size...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await status_msg.edit_text(f"**Checking file size...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         filesize_pre = await get_link_size(url)
         if filesize_pre is not None:
             if filesize_pre > 10 * 1024 * 1024 * 1024:
@@ -1306,7 +1365,7 @@ async def leech_cmd(client: Client, message: Message):
                     raise Exception(f"Your remaining quota ({UI.human_size(quota_left)}) is not enough for this file ({UI.human_size(filesize_pre)})!")
 
         # Step 1: Download
-        await status_msg.edit_text("**Downloading file...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await status_msg.edit_text(f"**Downloading file...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         file_path = await network.download(url, DOWNLOAD_DIR, status_msg, user_id=user_id, task_id=task_id)
         filename = os.path.basename(file_path)
         filesize = os.path.getsize(file_path)
@@ -1316,25 +1375,25 @@ async def leech_cmd(client: Client, message: Message):
         thumb = thumb_path if os.path.exists(thumb_path) else None
         
         # Step 2: Upload to Telegram
-        await status_msg.edit_text(f"**Uploading to Telegram...**", reply_markup=get_cancel_keyboard(task_id, url))
+        await status_msg.edit_text(f"**Uploading to Telegram...**\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
         
         max_upload_size = 1999 * 1024 * 1024  # 1.99 GB
         if filesize > max_upload_size:
-            await status_msg.edit_text(f"**Large file detected ({UI.human_size(filesize)}).**\nSplitting file into parts...", reply_markup=get_cancel_keyboard(task_id, url))
+            await status_msg.edit_text(f"**Large file detected ({UI.human_size(filesize)}).**\nSplitting file into parts...\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
             split_files = await split_file(file_path, max_upload_size)
             
             total_parts = len(split_files)
             for idx, part_path in enumerate(split_files, 1):
                 part_size = os.path.getsize(part_path)
                 part_name = os.path.basename(part_path)
-                await status_msg.edit_text(f"**Sending Part {idx}/{total_parts}...**\n`{part_name}`", reply_markup=get_cancel_keyboard(task_id, url))
+                await status_msg.edit_text(f"**Sending Part {idx}/{total_parts}...**\n`{part_name}`\n• **User:** {user_mention}", reply_markup=get_cancel_keyboard(task_id, url))
                 
                 start_time = time.time()
                 await client.send_document(
                     chat_id=message.chat.id,
                     document=part_path,
                     file_name=part_name,
-                    caption=f"**Part {idx}/{total_parts}**\n\n• **Filename:** `{filename}`\n• **Part Size:** `{UI.human_size(part_size)}`\n• **Total Size:** `{UI.human_size(filesize)}`",
+                    caption=f"**Part {idx}/{total_parts}**\n\n• **Filename:** `{filename}`\n• **Part Size:** `{UI.human_size(part_size)}`\n• **Total Size:** `{UI.human_size(filesize)}`\n• **User:** {user_mention}",
                     progress=leech_upload_progress,
                     progress_args=(status_msg, start_time, part_name, task_id, url),
                     thumb=thumb
@@ -1350,7 +1409,7 @@ async def leech_cmd(client: Client, message: Message):
                 chat_id=message.chat.id,
                 document=file_path,
                 file_name=filename,
-                caption=f"**Leech Completed**\n\n• **Filename:** `{filename}`\n• **Size:** `{UI.human_size(filesize)}`",
+                caption=f"**Leech Completed**\n\n• **Filename:** `{filename}`\n• **Size:** `{UI.human_size(filesize)}`\n• **User:** {user_mention}",
                 progress=leech_upload_progress,
                 progress_args=(status_msg, start_time, filename, task_id, url),
                 thumb=thumb
@@ -1365,14 +1424,16 @@ async def leech_cmd(client: Client, message: Message):
     except asyncio.CancelledError:
         logger.info(f"Task {task_id} was cancelled by user.")
         try:
-            await status_msg.edit_text("**Leech process cancelled by user.**")
+            user_mention = active_tasks_meta.get(task_id, {}).get("user_mention", f"ID: `{user_id}`")
+            await status_msg.edit_text(f"**Leech process cancelled by user.**\n• **User:** {user_mention}")
         except Exception:
             pass
         raise
     except Exception as e:
         logger.error(f"Error executing leech command: {e}", exc_info=True)
         try:
-            await status_msg.edit_text(f"**An error occurred:**\n`{str(e)}`")
+            user_mention = active_tasks_meta.get(task_id, {}).get("user_mention", f"ID: `{user_id}`")
+            await status_msg.edit_text(f"**An error occurred:**\n`{str(e)}`\n• **User:** {user_mention}")
         except Exception:
             pass
     finally:
