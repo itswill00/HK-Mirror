@@ -1,0 +1,20 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Bot configuration and session
+config.env
+*.session
+*.session-journal
+bot.log
+
+# Temporary storage
+downloads/
+thumbnails/

@@ -1,0 +1,6 @@
+pyrofork==2.3.69
+tgcrypto
+aiohttp
+aiofiles
+python-dotenv
+motor
